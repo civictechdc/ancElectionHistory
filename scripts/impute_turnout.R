@@ -12,7 +12,6 @@ library(tidyverse)
 library(sf)
 library(lwgeom)
 library(magrittr)
-# for some reason we need to get magrittr explicitly to get fancy pipes
 
 knitr::opts_chunk$set(echo=FALSE, results='hide')
 
@@ -26,13 +25,19 @@ prefix <- ifelse(wd=="scripts", "../", "")
 regs <- read.csv(paste(prefix, "cleaned_data/2012_2018_ballots_precinct.csv", sep=""),
          header=TRUE, sep=",")
 
+#' We'd like to get data on voter turnout to contextualize data on e.g. down-ballot roll-off for ANC elections. Roll-off can be calculated (post-2012) from ANC-level data on ballots cast and undervotes, but registrations are only available in the election data at the precinct level, so we need to think about how to aggregate from precinct to ANC.
+#+
 
-#' ### Look at registration/ballot data
+
+#' # Look at registration/ballot data
+#' ### Registration / ballot data:
+#'
+#' - Data at precinct level
+#' - Broken out by ANC based on precinct/ANC overlaps in election data
 #+ echo=FALSE, results='show'
 
-print(as_tibble(regs[order(regs$precinct),]))
-# ah, this has double observations...
-# OH! it just has double 2012 obs, which was cuz sloppy processing in election_cleaner.R
+#print(as_tibble(regs[order(regs$precinct),]))
+regs %>% as_tibble %>% print(n=5)
 
 # Make table of # ANCs corresponding to each precinct
 regs %<>% mutate(anc.full = paste(as.character(ward), as.character(anc), sep=""))
@@ -40,16 +45,19 @@ count <- regs %>% group_by(precinct) %>% summarize(ancs = length(unique(anc.full
 
 # print some stuff
 
-#' How many ANCs does each precinct lie in?
+
+#' ### How many precincts cross ANC's?
+#'
+#' - About half of precincts fall in more than one ANC
+#' - so we'll have to do some figuring to aggregate data up from precinct to ANC
 #+ results='show'
-print(count)
-
-#' How many precincts cross N ANC's?
-#+ results='show'
-print(count %>% group_by(ancs) %>% summarize(precincts = length(unique(precinct))))
+count %>% group_by(ancs) %>% summarize(precincts = length(unique(precinct))) %>%
+    data.frame %>% print
 
 
-#' ### Check how many precincts cross ANC boundaries
+#' ### How many ANCs share precincts with neighbors?
+#'
+#' - notate precincts which cross ANCs as 'duplicitous'
 #+
 
 # Merge data on 'duplicitous' precincts w/ registration data
@@ -60,71 +68,58 @@ collapsed <- count %>%
 	rename(voters = registered_voters) %>%
 	select(anc.full, precinct, year, duplicitous, voters, ballots)
 
-
-#	group_by(anc.full, precinct, year) %>%
-#       summarize(
-#            duplicitous = unique(duplicitous),
-#            voters = unique(registered_voters),
-#            ballots = unique(ballots))
-# this collapse should be obviated by the fixed input data...
-
-#' Precinct-level registration data with 'duplicitous' added
 #+ results='show'
-print(collapsed)
+collapsed %>% print(n=5)
 
-
-# how many ANCs have duplicitous pcts?
+#' 
+#' - count duplicitous precincts by ANC
+#+ results='show'
 count.anc <- collapsed %>% group_by(anc.full) %>%
             mutate(count.tot = length(unique(precinct))) %>%
             filter(duplicitous) %>%
             group_by(anc.full) %>%
             summarize(count.dup = length(unique(precinct)),
 	            count.tot = unique(count.tot))
+            
+count.anc %>% print(n=5)
 
-#' How many ANCs have duplicitous precincts?
-#+ results='show'
-print(count.anc)
 
-#' Use ward 1 as sanity check  
-#' from ward 1 map, we know:  
-#' 39 -> 1A, 1D, 1C (trivially)  
-#' 36 1A 1B  
-#' 37 is 1B + 1 block of 1A  
+#' # Quick validity check 
+#' ### Using a map of ward 1 ANCs/precincts
+#' ![](../raw_data/Ward1.pdf)
+# <embed src=../raw_data/Ward1.pdf width=400 height=400 />
+#' from ward 1 map, we know:
+#' 
+#' - pct 39 -> ANC 1A, 1D, 1C (trivially)
+#' - 36 -> 1A 1B
+#' - 37 -> 1B + 1 block of 1A
 #'   
-#' Test ward 1 precinct overlaps! (in voting data)  
-#' expect:  
-#' 36 1A 1B  
-#' 39 1A 1D (1C)  
-#' 37 1A 1B  
 #+ results='show'
 ward1 <- regs %>% filter(ward == 1 & year == 2012) %>%
             group_by(precinct) %>%
 	    summarize(ancs = reduce(unique(anc.full), paste))
-print(ward1)
+ward1 %>% filter(nchar(ancs) > 2) %>% data.frame %>% print
 
 #' so at this point we could just toss precincts crossing ANCs (and lose around 40% of the data)  
-#' or we could average them or something  
+#' or we could do a naive average  
 #' or we could give them weighted averages based on GIS data....  
 #'   
 
-#' ### Shapefiles
+#' # GIS Data
+#' ### Read in shapefiles
 #+ echo=TRUE
-# read in shapefiles
-precinct_shapes <- st_read(paste(prefix, "raw_data/precinct_shapes_2012/Voting_Precinct__2012.shp", sep=""))
-anc_shapes <- st_read(paste(prefix, "raw_data/anc_2013/Advisory_Neighborhood_Commissions_from_2013.shp", sep=""))
-
-#print(anc_shapes)
+precinct.shapes <- st_read(paste(prefix, "raw_data/precinct_shapes_2012/Voting_Precinct__2012.shp", sep=""))
+anc.shapes <- st_read(paste(prefix, "raw_data/anc_2013/Advisory_Neighborhood_Commissions_from_2013.shp", sep=""))
 
 
-#' compute intersections between ANC & precinct shapes
+#' ### Compute intersections between ANC & precinct shapes
 #+ echo=TRUE
-# compute shape overlaps
-overlap <- st_intersection(anc_shapes, precinct_shapes) %>%
+overlap <- st_intersection(anc.shapes, precinct.shapes) %>%
         mutate(over.area = st_area(.) %>% as.numeric()) %>%
 	rename(.anc = NAME, .precinct = NAME.1) %>%
 	select(.anc, .precinct, over.area)
 
-
+#+
 # parse ANC & precinct identifiers better
 overlap %<>%
         mutate(anc.full =
@@ -133,13 +128,13 @@ overlap %<>%
 	    regmatches(.precinct, regexpr("[[:digit:]]+", .precinct)))
 overlap %<>% select(anc.full, precinct, over.area)
 #+ results='show'
-head(overlap)
+overlap %>% print(n=5)
 
 #'   
-#' How many entries do we get in the overlap dataset?
+#' ### How many entries do we get in the overlap dataset?
 #+ results='show'
 print(nrow(overlap))
-#' How many did we start with in the election data grouped by anc x pct?
+#' ### How many did we start with in the election data grouped by anc x pct?
 #+ results='show'
 print(nrow(collapsed) / 4)
 
@@ -147,19 +142,19 @@ print(nrow(collapsed) / 4)
 
 
 
-#' these aren't wildly off, so it's clearly only including shapes with intersections -- it just might be counting some trivial ones  
+#' These aren't wildly off, so it's clearly only including shapes with intersections -- it just might be counting some trivial ones  
 #'   
-#' how many of the intersections in 'overlap' are nontrivial?  
+#' ### How many of the intersections in 'overlap' are nontrivial?  
 #+ results='show'
 print(nrow(overlap[overlap$over.area > 10,]))
 
 #' what are the units? it's like 7-digit numbers... sq meters, feet, lat/lon minutes???
 #+ results='show'
-hist(overlap$over.area, breaks=200)
-# broken...
+summary(overlap$over.area)
+#hist(overlap$over.area, breaks=200)
 
 
-# well... we could start by restricting it to ones noted in 'collapsed'
+# Well... we could start by restricting it to ones noted in 'collapsed'
 
 # how do we test??
 # plot shapes
@@ -173,35 +168,34 @@ hist(overlap$over.area, breaks=200)
 
 # 0. get relative areas of precincts in diff ANCs
 
-#' compute relative areas of intersections w/r/t precincts  
+#' # Compute relative areas of intersections w/r/t precincts  
+#' ### Get precinct total areas
 #+ echo=TRUE
-# get precinct total areas
-precinct.areas <- precinct_shapes %>%
+precinct.areas <- precinct.shapes %>%
             mutate(area = st_area(.) %>% as.numeric(),
                 precinct = regmatches(NAME, regexpr("[[:digit:]]+", NAME)))
 precinct.areas <- tibble(precinct=precinct.areas$precinct,
                             prec.area=precinct.areas$area)
 
-# merge with overlap areas
+#' ### Merge with overlap areas
+#+ echo=TRUE
 overlap %<>% inner_join(precinct.areas, by=c("precinct"))
 
-#print(overlap)
-
-# compute relative area of ANCxprec as [area of overlap] / [precinct area]
+#' ### Compute relative area of ANC x pct as [area of overlap] / [precinct area]
+#+ echo=TRUE
 overlap %<>% mutate(rel.area = over.area / prec.area)
 
-
 #+ results='show'
-head(overlap)
-hist(overlap$rel.area, breaks=100)
+#head(overlap)
+hist(overlap$rel.area, breaks=20)
 
 
-# Test vs. ward 1 map
-#' Test ward 1 precinct overlaps! (geo data)  
-#' Expect:  
-#' 36 1A 1B  
-#' 39 1A 1D (1C)  
-#' 37 1A 1B  
+#' # Check against ward 1 map again
+#' Expect:
+#' 
+#' - 36 -> 1A 1B
+#' - 39 -> 1A 1D (1C)
+#' - 37 -> 1A 1B
 #+ results='show'
 ward1 <- overlap[regexpr("1", overlap$anc.full) > 0,] %>%
                filter(rel.area > .01) %>%
@@ -209,121 +203,88 @@ ward1 <- overlap[regexpr("1", overlap$anc.full) > 0,] %>%
 	       summarize(ancs = reduce(unique(anc.full), paste),
 	           min.area = min(over.area)) %>%
 	       filter(regexpr(" ", ancs)>0)
-print(ward1)
+ward1 <- tibble(precinct=ward1$precinct, ancs=ward1$ancs, min.area=ward1$min.area)
+ward1 %>% data.frame %>% print
 
 #' Matches election data at 1% relative area cutoff (to toss noise)  
 #+
 
-#' ### Cross-reference with reg data
+#' ### Cross-reference with registration data
 #+ echo=TRUE, results='show'
 overlap %<>% mutate(precinct = as.integer(precinct))
 crossref <- full_join(overlap, collapsed, by=c("anc.full", "precinct"))
 
+crossref %<>% data.frame %>% select(-geometry)
+crossref %>% as_tibble %>% print(n=5)
 
-print(crossref)
-# everything's double here. why?
-# collapsed is double...
-
-# who's left hanging?
-# rel.area represents 'overlap'; duplicitous reps 'collapsed'
-# what do we expect?
-#   hopefully nobody left hanging from 'collapsed'
-
-#' Any precinct-ANC combos from voting data missing from GIS data?
+#' ### Any precinct-ANC combos from voting data missing from GIS data?
 #+ results='show'
 hanging.vote <- crossref %>% filter(is.na(rel.area), year==2012)
 print(nrow(hanging.vote))
 print(hanging.vote)
-#' with no rel.area filtering, we get 3 missing, one of which is 'duplicitous'   
-#' why would we get non-duplicitous hanging??? funny.  
 
-#'  ************************** Look into this ^^  *************************  
-#' the non-duplicitous ones are 4G which is the extension of 3G into ward 4!! just coded inconsistently I believe.  
-#' The other one is 2D  
-
-#' Are any precinct-ANC combos from GIS data missing from voting data?
+#' ### Are any precinct-ANC combos from GIS data missing from voting data?
+#'
+#' - filtering at 5% relative area
 #+ results='show'
-hanging.gis <- crossref %>% filter(is.na(duplicitous))
-print(nrow(hanging.gis))
-#print(hanging.gis)
-#' there's 5 (when we drop at 10% rel.area):  
-#' 2A prec 6; 3G prec 51; 7B prec 107; 3G prec 52; 6D prec 129  
+hanging.gis <- crossref %>% filter(is.na(duplicitous), rel.area > .05)
+hanging.gis %>% as_tibble %>% print(n=5)
 
+#' - We're matching up well!
 
-# what does relative area look like cond. on 'duplicitous'?
-#crossref %>% filter(duplicitous, is.numeric(rel.area)) %>% hist(as.numeric(rel.area), breaks=100)
-# ^^ not working
+#+
 
-
-#' ### Compute turnout, weighting ambiguous precincts by goegraphic overlap
+#' # Compute turnout
+#' ## Weighting ambiguous precincts by goegraphic overlap
 #+ echo=TRUE, results='show'
 
-# drop hanging gis data
+#' ### Drop GIS data which didn't match any election data
+#+ echo=TRUE
 crossref %<>% filter(!is.na(duplicitous))
 
-# fix hanging vote data, first dropping duplicitous prec's w/ missing GIS
+#' ### Fix hanging vote data
+#' 
+#' - First drop duplicitous precincts w/ missing GIS
+#' - Then set rel.area to 1 if missing (having retained only non-duplicitous precincts)
+#+ echo=TRUE
 crossref %<>% filter(!(is.na(rel.area) & duplicitous))
 crossref %<>% mutate(rel.area = ifelse(is.na(rel.area), 1, rel.area))
 
-
-# gotta... recompute 'duplicitous' I think?
+#' - Recompute 'duplicitous' after dropping
+#+ echo=TRUE
 crossref %<>% group_by(precinct, year) %>%
                 mutate(duplicitous = length(unique(anc.full))>1)
-# and then make sure nonduplicitous obs have area 1
-print("how many non-duplicitous precincts have rel.area  < 1?")
-print(nrow(crossref %>% filter(!duplicitous & rel.area < 1)))
-# eeeek 350 fail this! of 850
-#hist(crossref$rel.area[!crossref$duplicitous], breaks=50)
-# but it doesn't look bad bad
-# this will probably be because of dropping trivial overlaps
-
-# force non-duplicitous to 1
-# tho ideally we'd like to fix all dropped areas...
-# ah! could normalize sums!
-# at ANC level
-# so then all we need is to have rel.area numbers for all obs
-#   which we do per above!
-# ah wait no I'm confused -- should think abt pct or anc??
-#   we convert area to ballots based on precinct totals
-#   so to avoid losing ballots we should renormalize @ pct lvl
-#   we might simply calculate rel.area without precinct.area, & after dropping
-
+#' - Make sure newly nonduplicitous obs have area 1
+#'   - by renormalizing relative area w/r/t precinct
+#+ echo=TRUE
 crossref %<>% group_by(precinct, year) %>%
-                mutate(norm.area = over.area / sum(over.area)) 
-cat("\n\nHow big a chance is norm.area vs. rel.area??\n(fivenum of diff)\n")
-print(fivenum(crossref$norm.area - crossref$rel.area))
-cat("\n\n")
+                mutate(norm.area = over.area / sum(over.area))
 
-# do the thing!
+#' - How much did this change relative areas?
+#+ results='show'
+summary(crossref$norm.area - crossref$rel.area)
+
+
+#' ### Aggregate with weighting
+#+ echo=TRUE
 crossref %<>% mutate(voters = voters * norm.area, ballots = ballots * norm.area)
 
-
-# aggregate up to ANC
 reg.fixed <- crossref %>% group_by(anc.full, year) %>%
                summarize(voters = round(sum(voters)),
 	           ballots = round(sum(ballots)),
 		   duplicitous = sum(duplicitous))
 
-
-# drop geo data 
-reg.fixed <- tibble(anc.full = reg.fixed$anc.full, year=reg.fixed$year,
-                   voters=reg.fixed$voters, ballots=reg.fixed$ballots,
-		   duplicitous=reg.fixed$duplicitous)
-
-# get turnout
 reg.fixed %<>% mutate(turnout = ballots / voters)
 
-print(reg.fixed)
-
+#+
 write.table(reg.fixed, file=paste(prefix, "cleaned_data/2012_2018_imputedTurnout_anc.csv", sep=""), sep=",", append=FALSE, quote=FALSE, row.names=FALSE, col.names=TRUE)
 
 
 
 
 #+
-#' ### Recompute turnout by dropping ANC-crossing precincts
+#' ## Recompute turnout by dropping ANC-crossing precincts
 #+ echo=TRUE
-
 reg.fixed.drop <- collapsed %>% filter(!duplicitous) %>%
                     group_by(anc.full, year) %>%
 		    summarize(voters = round(sum(voters)),
@@ -353,12 +314,14 @@ if(sys.nframe() == 0L){
 }
 
 
-#' ## Testing Imputed Turnout
+#' # Testing Imputed Turnout
 
-#' We would like to have voter turnout data at the ANC level as another variable to contextualize engagement in ANC elections, but we only have # registered voters at precinct-level, which doesn't align nicely with ANCs (though for 2014 and later, we have # ballots cast at ANC-level, which we'll use to test).
+#' Now that we have turnout estimates, draw in the election data for some testing
 
-#' ## Merge together dropping and apportioning turnout estimates with election data
-
+#+
+#' ## Merge together dropped and geo-weighted turnout estimates with election data
+#'
+#' - losing some ANCs which had no fully contained precincts:
 #+ merge, results='show'
 
 reg.fixed.drop %<>% select(anc.full, year, turnout) %>%
@@ -368,12 +331,11 @@ reg.fixed.drop %<>% select(anc.full, year, turnout) %>%
 reg.fixed %<>% full_join(reg.fixed.drop, by=c("anc.full", "year"))
 
 
-cat("\nCheck turnout-turnout merge\n\n")
-tmp <- reg.fixed %>% filter(is.na(turnout) | is.na(turnout.drop))
-print(tmp)
+reg.fixed %>% filter(is.na(turnout) | is.na(turnout.drop)) %>% print(n=5)
 
-# Do a final test of match with election ballot data!
 
+
+#+
 election.data <- read.csv(file="../cleaned_data/2012_2018_ancElection_contest.csv", sep=",", header=TRUE)
 
 election.data %<>% mutate(anc.full = paste(ward,anc,sep="")) %>%
@@ -386,74 +348,49 @@ ballot.check <- reg.fixed %>%
                   mutate(error = ballots - actual.ballots,
 		      rel.error = error / actual.ballots)
 
-# merge is good
-print("Who's missing from the election data?")
-merge.e <- anti_join(reg.fixed, election.data, by=c("anc.full", "year"))
-print(merge.e)
-
-print("Who's missing from the turnout data?")
-merge.t <- anti_join(election.data, reg.fixed, by=c("anc.full", "year"))
-print(merge.t)
-
-
-#' OH the reason I was seeing a bunch of NAs below is cuz missing 2012 data! so it's not so bad. what we are missing is 4G (from election data, cuz it's 3G) and 2F 3B 3F from turnout data. weird!  
-
-#' don't forget to full_join the two turnouts!!
-
 
 #' # Compare estimated ballots with post-2012 actual ballots
 
 #+ check, results='show'
-w = ggplot(ballot.check, aes(rel.error)) + geom_histogram(binwidth=.05) +
-                labs(title="Distribution of Relative Error in Estimating Ballots")
-show(w)
-print("hmm. a number of obs off by more than 1000. sharks.")
-
-
-print("How Bad is It????")
-print("(fivenum of diff)")
-print(fivenum(ballot.check$error))
-print("(diff in fivenums)")
-print(fivenum(ballot.check$ballots) - fivenum(ballot.check$actual.ballots))
-
-
-
-#' ## Make some plots
+ballot.check %>% filter(year != 2012) %>%
+              ggplot(aes(rel.error)) %>%
+              + geom_histogram(binwidth=.05) %>%
+              + labs(title="Distribution of Relative Error in Estimating Ballots") %>%
+              print
 
 #+ plots, results='show'
-# Make a Plot
-x <- ggplot(ballot.check) +
-            geom_point(aes(actual.ballots, ballots,
-	                colour=factor(duplicitous))) +
-	    labs(title="How well does our estimate correspond to recorded ballots?")
-show(x)
-# doesn't look so bad here, but outliers are notable
+ballot.check %>% filter(year != 2012) %>%
+            ggplot() %>%
+            + geom_point(aes(actual.ballots, ballots,
+	                colour=factor(duplicitous))) %>%
+	    + labs(title="How well does our estimate correspond to recorded ballots?") %>%
+            print
 
-# which ones are off??
-cat("\nWhich ANCs have significant relative error in est. ballots?\n\n")
-print(filter(ballot.check, abs(rel.error)>.25))
-# I could keep some stuff like duplicitous count in reg.fixed...
-# 3G, 2F, 2A 2018 are real farcked
-# they aren't super small
-# nor overly duplicitous
-# do they have widely varying population densities?
+#' ### Which ANCs have particularly off estimates?
+#+ results='show'
+ballot.check %>% filter(abs(rel.error) > .25) %>%
+    select(anc.full, year, duplicitous, ballots, actual.ballots, rel.error) %>%
+    print(n=15)
 
-# tag error outliers
+#' ### How does est. precinct size (as registered voters) relate to est. turnout?
+#+ results='show'
 ballot.check %<>% mutate(outlier = abs(rel.error)>.25)
 
-y <- ggplot(ballot.check) + geom_point(aes(ballots, turnout, colour=factor(outlier))) +
-                labs(title="How does estimated turnout relate to estimated ballots?")
-show(y)
-# what to make of this?? some ANCs have very low turnout, but only when they have few... ballots... aha. IV should be registrations maybe?
+ballot.check %>% ggplot() %>%
+                + geom_point(aes(voters, turnout, colour=factor(outlier))) %>%
+                print
 
-z <- ggplot(ballot.check) + geom_point(aes(turnout, turnout.drop, colour=factor(outlier))) +
-                labs(title="How close are our two measures of turnout?")
-show(z)
-# looks tight. perhaps three outliers...
+#' ### How closely do our two measure of turnout track?
+#+ results='show'
+ballot.check %>% ggplot() %>%
+                + geom_point(aes(turnout, turnout.drop, colour=factor(outlier))) %>%
+                print
+
+#' ### Which ANCs have the greatest discrepancy between turnout and turnout.drop?
+#+ results='show'
 ballot.check %<>% mutate(turnout.diff = turnout - turnout.drop)
 ballot.check <- ballot.check[order(ballot.check$turnout.diff),] 
-cat("\nWhich ANCs have the greatest discrepancy between turnout and turnout.drop?\n\n")
-print(head(ballot.check))
-# ********* Q: are these the same as outliers in plot above??
+ballot.check %>% select(anc.full, year, voters, duplicitous, turnout.diff) %>%
+    print(n=10)
 
 
