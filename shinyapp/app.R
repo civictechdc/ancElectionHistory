@@ -14,12 +14,13 @@ library(magrittr)
 library(dplyr)
 library(ggplot2)
 
-electionHistoryTable = read_csv('election_history_R.csv')
+electionHistoryTable = read_csv('../cleaned_data/2012_2018_ancElection_contest.csv')
 electionHistoryTable %<>% 
   mutate(ward = as.factor(ward),smd = as.factor(smd),anc=as.factor(anc),year=as.integer(year)) %>% 
   select(year,ward,anc,smd,smd_anc_votes,winner_votes) %>%
   mutate(winnerPct = winner_votes / smd_anc_votes)
 
+  
 # Define UI for application that draws a histogram
 ui <- navbarPage("Historical ANC Data Dashboard",
                  
@@ -29,7 +30,8 @@ ui <- navbarPage("Historical ANC Data Dashboard",
           
           uiOutput("smdPlot_select_ward"),
           uiOutput("smdPlot_select_anc"),
-          uiOutput("smdPlot_select_smd")
+            uiOutput("smdPlot_select_smd"),
+            checkboxInput("smdPlot_select_all", "Select All SMDs", value=FALSE)
         ),
         
         # Show a plot of the generated distribution
@@ -63,12 +65,14 @@ ui <- navbarPage("Historical ANC Data Dashboard",
 server <- function(input, output,session) {
   
   smdPlotTable <- reactive({
-    
+
+      req(input$smdSelection)
+      
     electionHistoryTable %>% 
       filter(ward==input$wardSelection) %>%
       filter(anc == input$ancSelection) %>%
       filter(smd %in% input$smdSelection)
-    
+      
   })
   
   distHistTable <- reactive({
@@ -76,29 +80,39 @@ server <- function(input, output,session) {
     electionHistoryTable %>%  mutate(year = as.factor(year))
   })
   
-  
+  observe({
+      if (input$smdPlot_select_all == TRUE){
+              updateCheckboxGroupInput(session, "smdSelection", choices=choice_smd(),
+                                       selected=choice_smd())
+      } else{
+              updateCheckboxGroupInput(session, "smdSelection", choices=choice_smd(),
+                                       selected=c())
+      }
+  })
   
   output$smdPlot_select_ward <- renderUI({
     
-    selectizeInput('wardSelection','Select Ward',choices=c("select" = "",levels(electionHistoryTable$ward)))
+    selectizeInput('wardSelection','Select Ward',choices=levels(electionHistoryTable$ward))
   })
   
+    choice_anc <- reactive({
+        req(input$wardSelection)
+        electionHistoryTable %>% filter(ward==input$wardSelection) %>% pull(anc) %>% unique() %>% as.character()
+    })
   
   output$smdPlot_select_anc <- renderUI({
-    
-    choice_anc <- reactive({
-      electionHistoryTable %>% filter(ward==input$wardSelection) %>% pull(anc) %>% unique() %>% as.character()
-    })
-    selectizeInput('ancSelection','Select ANC',choices=c("select" = "",choice_anc()))
-  })
-  
-  output$smdPlot_select_smd <- renderUI({
-    
-    choice_smd <- reactive({
       
-      electionHistoryTable %>% filter(ward==input$wardSelection) %>% filter(anc == input$ancSelection) %>% pull(smd) %>% unique() %>% as.character()
+    selectizeInput('ancSelection','Select ANC',choices=choice_anc())
+  })
+
+    choice_smd <- reactive({
+        req(input$ancSelection)
+        electionHistoryTable %>% filter(ward==input$wardSelection) %>% filter(anc == input$ancSelection) %>% pull(smd) %>% unique() %>% as.character()
     })
-    checkboxGroupInput("smdSelection",'Select SMD',choices = choice_smd(),selected = 1)
+          
+  output$smdPlot_select_smd <- renderUI({
+      
+    checkboxGroupInput("smdSelection",'Select SMD',choices = choice_smd())
   })
 
 
